@@ -2,10 +2,12 @@ package com.example.speed;
 
 import net.fabricmc.api.ModInitializer;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.item.Items;
 import net.minecraft.text.Text;
+import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.hit.HitResult;
-import net.minecraft.util.math.Box;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 import org.lwjgl.glfw.GLFW;
 
@@ -13,9 +15,6 @@ public class SpeedMod implements ModInitializer {
     private static final MinecraftClient mc = MinecraftClient.getInstance();
     private static boolean enabled = false;
     private static boolean lastR = false;
-    private static int tickCounter = 0;
-    private static final double CLIMB_SPEED = 0.35;      // сила подъёма
-    private static final double WALL_PUSH = 0.1;         // прижимание к стене
 
     @Override
     public void onInitialize() {
@@ -27,42 +26,53 @@ public class SpeedMod implements ModInitializer {
                 boolean currentR = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS;
                 if (currentR && !lastR) {
                     enabled = !enabled;
-                    mc.player.sendMessage(Text.literal(enabled ? "§aSpider ON" : "§cSpider OFF"), true);
+                    mc.player.sendMessage(Text.literal(enabled ? "§aWallWaterFly ON" : "§cWallWaterFly OFF"), true);
                     try { Thread.sleep(200); } catch (InterruptedException ignored) {}
                 }
                 lastR = currentR;
-                if (enabled) tick();
+                if (enabled && mc.options.jumpKey.isPressed()) {
+                    tick();
+                }
             }
         }).start();
     }
 
     private void tick() {
-        if (mc.player == null) return;
-        tickCounter++;
+        if (mc.player == null || mc.world == null) return;
 
-        // Проверяем, зажат ли прыжок
-        if (!mc.options.jumpKey.isPressed()) return;
+        // Проверяем наличие ведра с водой в инвентаре
+        boolean hasBucket = mc.player.getInventory().contains(Items.WATER_BUCKET.getDefaultStack());
+        if (!hasBucket) return;
 
-        // Проверяем, есть ли блок перед игроком (стена)
+        // Вычисляем блок перед игроком (на расстоянии 0.5 блока)
         Vec3d eyePos = mc.player.getEyePos();
         Vec3d lookVec = mc.player.getRotationVector();
-        double reach = 3.0;
-        Vec3d end = eyePos.add(lookVec.multiply(reach));
-        BlockHitResult hit = mc.world.raycast(new net.minecraft.world.RaycastContext(eyePos, end, net.minecraft.world.RaycastContext.ShapeType.OUTLINE, net.minecraft.world.RaycastContext.FluidHandling.NONE, mc.player));
-        boolean isTouchingWall = hit.getType() == HitResult.Type.BLOCK && hit.getPos().distanceTo(eyePos) < 2.0;
+        BlockPos frontBlock = BlockPos.ofFloored(eyePos.add(lookVec.multiply(0.6))); // перед лицом
 
-        if (!isTouchingWall) return;
+        // Убедимся, что этот блок – воздух (иначе не поставить воду)
+        if (!mc.world.getBlockState(frontBlock).isAir()) return;
 
-        // Каждые 2 тика даём импульс вверх и к стене
-        if (tickCounter % 2 == 0) {
-            // Вертикальный импульс
-            mc.player.addVelocity(0, CLIMB_SPEED, 0);
-            // Импульс в сторону стены (прижимание)
-            Vec3d wallDir = hit.getPos().subtract(eyePos).normalize();
-            mc.player.addVelocity(wallDir.x * WALL_PUSH, 0, wallDir.z * WALL_PUSH);
+        // Находим слот с ведром воды
+        int bucketSlot = -1;
+        for (int i = 0; i < 9; i++) {
+            if (mc.player.getInventory().getStack(i).getItem() == Items.WATER_BUCKET) {
+                bucketSlot = i;
+                break;
+            }
         }
+        if (bucketSlot == -1) return;
 
-        // Автоспринт не нужен, но можно включить
-        mc.player.setSprinting(true);
+        int prevSlot = mc.player.getInventory().selectedSlot;
+        mc.player.getInventory().selectedSlot = bucketSlot;
+
+        // Ставим воду на стену (блок перед игроком)
+        BlockHitResult hit = new BlockHitResult(Vec3d.ofCenter(frontBlock), Direction.UP, frontBlock, false);
+        mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, hit);
+
+        // Возвращаем слот
+        mc.player.getInventory().selectedSlot = prevSlot;
+
+        // Прыгаем, чтобы начать подъём в воде
+        mc.player.jump();
     }
 }
