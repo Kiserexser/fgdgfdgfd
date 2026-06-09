@@ -1,9 +1,8 @@
 package com.example.speed;
 
 import net.fabricmc.api.ModInitializer;
-import net.minecraft.block.BlockState;
+import net.minecraft.block.Block;
 import net.minecraft.block.Blocks;
-import net.minecraft.block.CarrotsBlock;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerInteractBlockC2SPacket;
@@ -27,7 +26,7 @@ public class SpeedMod implements ModInitializer {
     private static final Set<BlockPos> brokenBlocks = ConcurrentHashMap.newKeySet();
     private static final Map<BlockPos, Long> blockBreakingTimes = new ConcurrentHashMap<>();
     private static final int RADIUS = 4;
-    private static final long COOLDOWN_MS = 500;
+    private static final long COOLDOWN_MS = 400;
 
     @Override
     public void onInitialize() {
@@ -56,8 +55,8 @@ public class SpeedMod implements ModInitializer {
         farmThread = new Thread(() -> {
             while (running && enabled) {
                 try {
-                    if (mc.player != null && mc.world != null) farmTick();
-                    Thread.sleep(50); // 20 проверок в секунду
+                    if (mc.player != null && mc.world != null) farm();
+                    Thread.sleep(1);
                 } catch (InterruptedException e) { break; }
             }
         });
@@ -74,23 +73,20 @@ public class SpeedMod implements ModInitializer {
         blockBreakingTimes.clear();
     }
 
-    private static void farmTick() {
+    private static void farm() {
         BlockPos playerPos = mc.player.getBlockPos();
         List<BlockPos> targets = new ArrayList<>();
 
+        // Поиск моркови в радиусе
         for (int x = -RADIUS; x <= RADIUS; x++) {
             for (int y = -1; y <= 1; y++) {
                 for (int z = -RADIUS; z <= RADIUS; z++) {
                     BlockPos pos = playerPos.add(x, y, z);
-                    BlockState state = mc.world.getBlockState(pos);
-                    if (state.getBlock() == Blocks.CARROTS) {
-                        // Проверяем возраст: 7 = зрелая
-                        int age = state.get(CarrotsBlock.AGE);
-                        if (age >= 7) {
-                            // Проверяем, что под блоком грядка
-                            if (mc.world.getBlockState(pos.down()).getBlock() == Blocks.FARMLAND) {
-                                targets.add(pos);
-                            }
+                    Block block = mc.world.getBlockState(pos).getBlock();
+                    if (block == Blocks.CARROTS) {
+                        Block below = mc.world.getBlockState(pos.down()).getBlock();
+                        if (below == Blocks.FARMLAND) {
+                            targets.add(pos);
                         }
                     }
                 }
@@ -104,24 +100,22 @@ public class SpeedMod implements ModInitializer {
 
         targets.sort(Comparator.comparingDouble(p -> p.getSquaredDistance(playerPos)));
         BlockPos target = targets.get(0);
-
         try {
             // Ломаем морковь
             mc.getNetworkHandler().sendPacket(new PlayerActionC2SPacket(PlayerActionC2SPacket.Action.START_DESTROY_BLOCK, target, Direction.UP));
-            Thread.sleep(80); // даём серверу время обработать
+            Thread.sleep(3);
             brokenBlocks.add(target);
             blockBreakingTimes.put(target, now);
 
-            // Проверяем, что блок действительно исчез (упрощённо)
-            if (mc.world.getBlockState(target).getBlock() == Blocks.AIR) {
-                // Сажаем новую морковь, если есть в левой руке
-                if (mc.player.getOffHandStack().getItem() == net.minecraft.item.Items.CARROT) {
-                    BlockPos dirtPos = target.down();
-                    BlockHitResult hit = new BlockHitResult(Vec3d.ofCenter(dirtPos), Direction.UP, dirtPos, false);
-                    mc.getNetworkHandler().sendPacket(new PlayerInteractBlockC2SPacket(Hand.OFF_HAND, hit));
-                    Thread.sleep(50);
-                }
+            // Сажаем новую морковь, если есть в левой руке
+            if (mc.player.getOffHandStack().getItem() == net.minecraft.item.Items.CARROT) {
+                BlockPos dirtPos = target.down();
+                BlockHitResult hitResult = new BlockHitResult(Vec3d.ofCenter(dirtPos), Direction.UP, dirtPos, false);
+                // ✅ Исправленный конструктор с параметром sequence = 0
+                mc.getNetworkHandler().sendPacket(new PlayerInteractBlockC2SPacket(Hand.OFF_HAND, hitResult, 0));
+                Thread.sleep(15);
             }
+            Thread.sleep(40);
         } catch (Exception e) {
             e.printStackTrace();
         }
