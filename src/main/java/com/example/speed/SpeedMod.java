@@ -1,10 +1,10 @@
 package com.example.speed;
 
 import net.fabricmc.api.ModInitializer;
+import net.minecraft.block.Blocks;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.text.Text;
-import net.minecraft.util.math.Vec3d;
+import net.minecraft.util.math.BlockPos;
 import org.lwjgl.glfw.GLFW;
 
 public class SpeedMod implements ModInitializer {
@@ -12,7 +12,6 @@ public class SpeedMod implements ModInitializer {
     private static boolean enabled = false;
     private static boolean lastR = false;
     private static int tickCounter = 0;
-    private static final double EXTRA_SPEED = 0.15;
 
     @Override
     public void onInitialize() {
@@ -24,7 +23,7 @@ public class SpeedMod implements ModInitializer {
                 boolean currentR = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS;
                 if (currentR && !lastR) {
                     enabled = !enabled;
-                    mc.player.sendMessage(Text.literal(enabled ? "§aPacketSpeed ON" : "§cPacketSpeed OFF"), true);
+                    mc.player.sendMessage(Text.literal(enabled ? "§aFenceBoost ON" : "§cFenceBoost OFF"), true);
                     try { Thread.sleep(200); } catch (InterruptedException ignored) {}
                 }
                 lastR = currentR;
@@ -34,23 +33,14 @@ public class SpeedMod implements ModInitializer {
     }
 
     private void tick() {
-        if (mc.player == null || mc.getNetworkHandler() == null) return;
-        tickCounter++;
-
-        if (mc.player.input.movementForward <= 0) return;
-
-        if (tickCounter % 3 == 0) {
-            Vec3d realPos = mc.player.getPos();
-            float yaw = mc.player.getYaw();
-            double rad = Math.toRadians(yaw);
-            double offsetX = -Math.sin(rad) * EXTRA_SPEED;
-            double offsetZ = Math.cos(rad) * EXTRA_SPEED;
-            Vec3d fakePos = new Vec3d(realPos.x + offsetX, realPos.y, realPos.z + offsetZ);
-            // В 1.21.4 конструктор требует 5 параметров: double x, double y, double z, boolean onGround, boolean hasHorizontalCollision
-            PlayerMoveC2SPacket.PositionAndOnGround packet = new PlayerMoveC2SPacket.PositionAndOnGround(fakePos.x, fakePos.y, fakePos.z, mc.player.isOnGround(), false);
-            mc.getNetworkHandler().sendPacket(packet);
+        if (mc.player == null) return;
+        BlockPos below = mc.player.getBlockPos().down();
+        boolean onFence = mc.world.getBlockState(below).getBlock() == Blocks.OAK_FENCE ||
+                          mc.world.getBlockState(below).getBlock() == Blocks.NETHER_BRICK_FENCE;
+        if (onFence && mc.options.jumpKey.isPressed()) {
+            // Добавляем вертикальный импульс
+            mc.player.setVelocity(mc.player.getVelocity().x, 0.6, mc.player.getVelocity().z);
+            mc.player.jump();
         }
-
-        mc.player.setSprinting(true);
     }
 }
