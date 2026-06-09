@@ -1,20 +1,18 @@
 package com.example.speed;
 
 import net.fabricmc.api.ModInitializer;
+import net.minecraft.block.Blocks;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.text.Text;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Box;
-import net.minecraft.util.math.Vec3d;
 import org.lwjgl.glfw.GLFW;
 
 public class SpeedMod implements ModInitializer {
     private static final MinecraftClient mc = MinecraftClient.getInstance();
     private static boolean enabled = false;
     private static boolean lastR = false;
-    private static long lastJumpTime = 0;
-    private static final long JUMP_DELAY_MS = 400;
-    private static final double JUMP_VELOCITY = 0.6;
+    private static int tickCounter = 0;
+    private static final double WEB_SPEED = 0.85;    // горизонтальное ускорение
+    private static final double WEB_UP = 0.85;       // вертикальный подъём
 
     @Override
     public void onInitialize() {
@@ -26,7 +24,7 @@ public class SpeedMod implements ModInitializer {
                 boolean currentR = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS;
                 if (currentR && !lastR) {
                     enabled = !enabled;
-                    mc.player.sendMessage(Text.literal(enabled ? "§aAirJump ON" : "§cAirJump OFF"), true);
+                    mc.player.sendMessage(Text.literal(enabled ? "§aWebFly+Speed ON" : "§cWebFly+Speed OFF"), true);
                     try { Thread.sleep(200); } catch (InterruptedException ignored) {}
                 }
                 lastR = currentR;
@@ -35,48 +33,37 @@ public class SpeedMod implements ModInitializer {
         }).start();
     }
 
-    private void tick() {
-        if (mc.player == null || mc.player.isOnGround()) {
-            // Если на земле, сбрасываем таймер
-            lastJumpTime = 0;
-            return;
-        }
+    private static void tick() {
+        if (mc.player == null) return;
+        tickCounter++;
 
-        long now = System.currentTimeMillis();
-        if (now - lastJumpTime >= JUMP_DELAY_MS && canAirJump()) {
-            mc.player.setVelocity(mc.player.getVelocity().x, JUMP_VELOCITY, mc.player.getVelocity().z);
-            lastJumpTime = now;
-        }
-    }
+        boolean inWeb = mc.world.getBlockState(mc.player.getBlockPos()).getBlock() == Blocks.COBWEB ||
+                        mc.world.getBlockState(mc.player.getBlockPos().down()).getBlock() == Blocks.COBWEB;
+        if (!inWeb) return;
 
-    private boolean canAirJump() {
-        // Режим "Polar Block Collision": проверяем наличие коллизии под игроком или вокруг
-        Box playerBox = mc.player.getBoundingBox();
-        // Смещаем немного вниз для проверки (как в оригинале)
-        Box checkBox = new Box(
-                playerBox.minX, playerBox.minY - 0.2,
-                playerBox.minZ, playerBox.maxX, playerBox.minY + 0.4,
-                playerBox.maxZ
-        );
-        // Перебираем все блоки в этой области
-        for (BlockPos pos : BlockPos.iterate(
-                (int) Math.floor(checkBox.minX), (int) Math.floor(checkBox.minY), (int) Math.floor(checkBox.minZ),
-                (int) Math.floor(checkBox.maxX), (int) Math.floor(checkBox.maxY), (int) Math.floor(checkBox.maxZ)
-        )) {
-            var state = mc.world.getBlockState(pos);
-            var shape = state.getCollisionShape(mc.world, pos);
-            if (!shape.isEmpty()) {
-                // Проверяем, пересекается ли коллизия с нашим боксом
-                var boxes = shape.getBoundingBoxes();
-                for (var box : boxes) {
-                    Box blockBox = new Box(pos.getX() + box.minX, pos.getY() + box.minY, pos.getZ() + box.minZ,
-                            pos.getX() + box.maxX, pos.getY() + box.maxY, pos.getZ() + box.maxZ);
-                    if (blockBox.intersects(checkBox)) {
-                        return true;
-                    }
-                }
+        // Вертикальный полёт (при зажатом прыжке)
+        if (mc.options.jumpKey.isPressed()) {
+            if (tickCounter % (1 + (int)(Math.random() * 2)) == 0) {
+                mc.player.addVelocity(0, WEB_UP, 0);
             }
         }
-        return false;
+
+        // Горизонтальное ускорение (при любом движении)
+        float forward = mc.player.input.movementForward;
+        float strafe = mc.player.input.movementSideways;
+        if (forward != 0 || strafe != 0) {
+            float yaw = mc.player.getYaw();
+            double rad = Math.toRadians(yaw);
+            double vx = -Math.sin(rad) * forward * WEB_SPEED;
+            double vz = Math.cos(rad) * forward * WEB_SPEED;
+            if (strafe != 0) {
+                double strafeRad = Math.toRadians(yaw + (strafe > 0 ? -90 : 90));
+                vx += -Math.sin(strafeRad) * strafe * WEB_SPEED;
+                vz += Math.cos(strafeRad) * strafe * WEB_SPEED;
+            }
+            mc.player.setVelocity(vx, mc.player.getVelocity().y, vz);
+        }
+
+        mc.player.setSprinting(true);
     }
 }
