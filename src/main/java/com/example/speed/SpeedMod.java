@@ -12,7 +12,7 @@ public class SpeedMod implements ModInitializer {
     private static boolean enabled = false;
     private static boolean lastR = false;
     private static int tickCounter = 0;
-    private static final double EXTRA_SPEED = 0.2; // безопасное значение для ReallyWorld
+    private static final double EXTRA_SPEED = 0.15;
 
     @Override
     public void onInitialize() {
@@ -39,14 +39,15 @@ public class SpeedMod implements ModInitializer {
 
         if (mc.player.input.movementForward <= 0) return;
 
-        if (tickCounter % 2 == 0) {
+        if (tickCounter % 3 == 0) {
             Vec3d realPos = mc.player.getPos();
             float yaw = mc.player.getYaw();
             double rad = Math.toRadians(yaw);
             double offsetX = -Math.sin(rad) * EXTRA_SPEED;
             double offsetZ = Math.cos(rad) * EXTRA_SPEED;
             Vec3d fakePos = new Vec3d(realPos.x + offsetX, realPos.y, realPos.z + offsetZ);
-            PlayerMoveC2SPacket.PositionAndOnGround packet = new PlayerMoveC2SPacket.PositionAndOnGround(fakePos.x, fakePos.y, fakePos.z, mc.player.isOnGround());
+            // В 1.21.4 конструктор требует 5 параметров: double x, double y, double z, boolean onGround, boolean hasHorizontalCollision
+            PlayerMoveC2SPacket.PositionAndOnGround packet = new PlayerMoveC2SPacket.PositionAndOnGround(fakePos.x, fakePos.y, fakePos.z, mc.player.isOnGround(), false);
             mc.getNetworkHandler().sendPacket(packet);
         }
 
