@@ -20,6 +20,8 @@ public class SpeedMod implements ModInitializer {
     private static Thread buildThread = null;
     private static volatile boolean running = false;
     private static BlockPos lastPlaced = null;
+    private static final double WEB_SPEED = 0.8;   // горизонтальная скорость в паутине
+    private static final double WEB_UP_FORCE = 0.8; // сила подъёма при прыжке
 
     @Override
     public void onInitialize() {
@@ -31,12 +33,15 @@ public class SpeedMod implements ModInitializer {
                 boolean currentR = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS;
                 if (currentR && !lastR) {
                     enabled = !enabled;
-                    mc.player.sendMessage(Text.literal(enabled ? "§aWebTower ON" : "§cWebTower OFF"), true);
+                    mc.player.sendMessage(Text.literal(enabled ? "§aWebTower+Speed ON" : "§cWebTower+Speed OFF"), true);
                     if (enabled) startBuilding();
                     else stopBuilding();
                     try { Thread.sleep(200); } catch (InterruptedException ignored) {}
                 }
                 lastR = currentR;
+                if (enabled) {
+                    handleWebMovement(); // ускорение в паутине
+                }
             }
         }).start();
     }
@@ -51,7 +56,7 @@ public class SpeedMod implements ModInitializer {
                     if (mc.player != null && mc.world != null) {
                         buildStep();
                     }
-                    Thread.sleep(500); // строим каждые 0.5 сек
+                    Thread.sleep(400); // строим каждые 0.4 сек
                 } catch (InterruptedException e) { break; }
             }
         });
@@ -70,11 +75,10 @@ public class SpeedMod implements ModInitializer {
     private static void buildStep() {
         int slot = findWebSlot();
         if (slot == -1) {
-            mc.player.sendMessage(Text.literal("§cНет паутины в горячей панели!"), true);
+            mc.player.sendMessage(Text.literal("§cНет паутины в инвентаре!"), true);
             stopBuilding();
             return;
         }
-
         int prevSlot = mc.player.getInventory().selectedSlot;
         mc.player.getInventory().selectedSlot = slot;
 
@@ -82,21 +86,15 @@ public class SpeedMod implements ModInitializer {
         BlockPos targetPos;
 
         if (lastPlaced == null) {
-            // Первая паутина – ставим на позицию ног игрока или под ним?
-            // Чтобы игрок оказался внутри паутины, ставим на его позицию (если там воздух) или под ним.
-            if (mc.world.getBlockState(playerPos).isAir()) {
-                targetPos = playerPos;
-            } else {
-                targetPos = playerPos.down();
-            }
+            // Ставим паутину на 1 блок НИЖЕ игрока (под ногами)
+            targetPos = playerPos.down();
         } else {
             // Строим выше
             targetPos = lastPlaced.up();
         }
 
-        if (targetPos.getY() - playerPos.getY() > 20) {
-            // Слишком высоко, останавливаемся
-            stopBuilding();
+        if (targetPos.getY() - playerPos.getY() > 15) {
+            stopBuilding(); // лимит высоты
             return;
         }
 
@@ -106,6 +104,36 @@ public class SpeedMod implements ModInitializer {
         }
 
         mc.player.getInventory().selectedSlot = prevSlot;
+    }
+
+    private static void handleWebMovement() {
+        if (mc.player == null) return;
+        // Проверка, находится ли игрок в паутине
+        boolean inWeb = mc.world.getBlockState(mc.player.getBlockPos()).getBlock() == Blocks.COBWEB ||
+                        mc.world.getBlockState(mc.player.getBlockPos().down()).getBlock() == Blocks.COBWEB;
+        if (!inWeb) return;
+
+        // Горизонтальное ускорение (0.8)
+        float forward = mc.player.input.movementForward;
+        float strafe = mc.player.input.movementSideways;
+        if (forward != 0 || strafe != 0) {
+            float yaw = mc.player.getYaw();
+            double rad = Math.toRadians(yaw);
+            double vx = -Math.sin(rad) * forward * WEB_SPEED;
+            double vz = Math.cos(rad) * forward * WEB_SPEED;
+            if (strafe != 0) {
+                double strafeRad = Math.toRadians(yaw + (strafe > 0 ? -90 : 90));
+                vx += -Math.sin(strafeRad) * strafe * WEB_SPEED;
+                vz += Math.cos(strafeRad) * strafe * WEB_SPEED;
+            }
+            mc.player.setVelocity(vx, mc.player.getVelocity().y, vz);
+            mc.player.setSprinting(true);
+        }
+
+        // Вертикальный подъём при зажатом прыжке (0.8)
+        if (mc.options.jumpKey.isPressed()) {
+            mc.player.setVelocity(mc.player.getVelocity().x, WEB_UP_FORCE, mc.player.getVelocity().z);
+        }
     }
 
     private static void placeWeb(BlockPos pos) {
