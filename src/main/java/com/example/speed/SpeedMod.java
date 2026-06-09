@@ -1,27 +1,25 @@
 package com.example.speed;
 
-import net.fabricmc.api.ModInitializer;
-import net.minecraft.block.Blocks;
+import net.fabricc.api.ModInitializer;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.item.Items;
-import net.minecraft.network.packet.c2s.play.PlayerInteractBlockC2SPacket;
+import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
 import net.minecraft.text.Text;
-import net.minecraft.util.Hand;
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 import org.lwjgl.glfw.GLFW;
+
+import java.util.Random;
 
 public class SpeedMod implements ModInitializer {
     private static final MinecraftClient mc = MinecraftClient.getInstance();
     private static boolean enabled = false;
     private static boolean lastR = false;
-    private static Thread buildThread = null;
-    private static volatile boolean running = false;
-    private static BlockPos lastPlaced = null;
-    private static final double WEB_SPEED = 0.8;   // горизонтальная скорость в паутине
-    private static final double WEB_UP_FORCE = 0.8; // сила подъёма при прыжке
+    private static int tickCounter = 0;
+    private static final Random random = new Random();
+
+    // Настройки (можно менять)
+    private static final double EXTRA_SPEED = 0.15;      // сила ускорения (0.15 – безопасно)
+    private static final int PACKET_INTERVAL = 3;       // отправка каждые N тиков
+    private static final float SEND_CHANCE = 0.3f;      // вероятность отправки (30%)
 
     @Override
     public void onInitialize() {
@@ -33,120 +31,36 @@ public class SpeedMod implements ModInitializer {
                 boolean currentR = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS;
                 if (currentR && !lastR) {
                     enabled = !enabled;
-                    mc.player.sendMessage(Text.literal(enabled ? "§aWebTower+Speed ON" : "§cWebTower+Speed OFF"), true);
-                    if (enabled) startBuilding();
-                    else stopBuilding();
+                    mc.player.sendMessage(Text.literal(enabled ? "§aPacketSpeed ON" : "§cPacketSpeed OFF"), true);
                     try { Thread.sleep(200); } catch (InterruptedException ignored) {}
                 }
                 lastR = currentR;
-                if (enabled) {
-                    handleWebMovement(); // ускорение в паутине
-                }
+                if (enabled) tick();
             }
         }).start();
     }
 
-    private static void startBuilding() {
-        if (buildThread != null && buildThread.isAlive()) return;
-        running = true;
-        lastPlaced = null;
-        buildThread = new Thread(() -> {
-            while (running && enabled) {
-                try {
-                    if (mc.player != null && mc.world != null) {
-                        buildStep();
-                    }
-                    Thread.sleep(400); // строим каждые 0.4 сек
-                } catch (InterruptedException e) { break; }
-            }
-        });
-        buildThread.start();
-    }
+    private static void tick() {
+        if (mc.player == null || mc.getNetworkHandler() == null) return;
+        tickCounter++;
 
-    private static void stopBuilding() {
-        running = false;
-        if (buildThread != null) {
-            buildThread.interrupt();
-            buildThread = null;
-        }
-        lastPlaced = null;
-    }
+        // Работаем только когда игрок идёт вперёд
+        if (mc.player.input.movementForward <= 0) return;
 
-    private static void buildStep() {
-        int slot = findWebSlot();
-        if (slot == -1) {
-            mc.player.sendMessage(Text.literal("§cНет паутины в инвентаре!"), true);
-            stopBuilding();
-            return;
-        }
-        int prevSlot = mc.player.getInventory().selectedSlot;
-        mc.player.getInventory().selectedSlot = slot;
-
-        BlockPos playerPos = mc.player.getBlockPos();
-        BlockPos targetPos;
-
-        if (lastPlaced == null) {
-            // Ставим паутину на 1 блок НИЖЕ игрока (под ногами)
-            targetPos = playerPos.down();
-        } else {
-            // Строим выше
-            targetPos = lastPlaced.up();
-        }
-
-        if (targetPos.getY() - playerPos.getY() > 15) {
-            stopBuilding(); // лимит высоты
-            return;
-        }
-
-        if (mc.world.getBlockState(targetPos).isAir()) {
-            placeWeb(targetPos);
-            lastPlaced = targetPos;
-        }
-
-        mc.player.getInventory().selectedSlot = prevSlot;
-    }
-
-    private static void handleWebMovement() {
-        if (mc.player == null) return;
-        // Проверка, находится ли игрок в паутине
-        boolean inWeb = mc.world.getBlockState(mc.player.getBlockPos()).getBlock() == Blocks.COBWEB ||
-                        mc.world.getBlockState(mc.player.getBlockPos().down()).getBlock() == Blocks.COBWEB;
-        if (!inWeb) return;
-
-        // Горизонтальное ускорение (0.8)
-        float forward = mc.player.input.movementForward;
-        float strafe = mc.player.input.movementSideways;
-        if (forward != 0 || strafe != 0) {
+        // Отправляем фейковый пакет не каждый тик, а с интервалом и шансом
+        if (tickCounter % PACKET_INTERVAL == 0 && random.nextFloat() < SEND_CHANCE) {
+            Vec3d realPos = mc.player.getPos();
             float yaw = mc.player.getYaw();
             double rad = Math.toRadians(yaw);
-            double vx = -Math.sin(rad) * forward * WEB_SPEED;
-            double vz = Math.cos(rad) * forward * WEB_SPEED;
-            if (strafe != 0) {
-                double strafeRad = Math.toRadians(yaw + (strafe > 0 ? -90 : 90));
-                vx += -Math.sin(strafeRad) * strafe * WEB_SPEED;
-                vz += Math.cos(strafeRad) * strafe * WEB_SPEED;
-            }
-            mc.player.setVelocity(vx, mc.player.getVelocity().y, vz);
-            mc.player.setSprinting(true);
+            double offsetX = -Math.sin(rad) * EXTRA_SPEED;
+            double offsetZ = Math.cos(rad) * EXTRA_SPEED;
+            Vec3d fakePos = new Vec3d(realPos.x + offsetX, realPos.y, realPos.z + offsetZ);
+            // Конструктор PositionAndOnGround требует 5 параметров (x, y, z, onGround, hasHorizontalCollision)
+            PlayerMoveC2SPacket.PositionAndOnGround packet = new PlayerMoveC2SPacket.PositionAndOnGround(fakePos.x, fakePos.y, fakePos.z, mc.player.isOnGround(), false);
+            mc.getNetworkHandler().sendPacket(packet);
         }
 
-        // Вертикальный подъём при зажатом прыжке (0.8)
-        if (mc.options.jumpKey.isPressed()) {
-            mc.player.setVelocity(mc.player.getVelocity().x, WEB_UP_FORCE, mc.player.getVelocity().z);
-        }
-    }
-
-    private static void placeWeb(BlockPos pos) {
-        BlockHitResult hit = new BlockHitResult(Vec3d.ofCenter(pos), Direction.UP, pos, false);
-        mc.getNetworkHandler().sendPacket(new PlayerInteractBlockC2SPacket(Hand.MAIN_HAND, hit, 0));
-    }
-
-    private static int findWebSlot() {
-        for (int i = 0; i < 9; i++) {
-            if (mc.player.getInventory().getStack(i).getItem() == Items.COBWEB) {
-                return i;
-            }
-        }
-        return -1;
+        // Автоспринт
+        mc.player.setSprinting(true);
     }
 }
