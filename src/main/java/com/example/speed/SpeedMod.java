@@ -2,39 +2,31 @@ package com.example.speed;
 
 import net.fabricmc.api.ModInitializer;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.widget.ButtonWidget;
-import net.minecraft.component.DataComponentTypes;
-import net.minecraft.component.type.EquippableComponent;
-import net.minecraft.entity.EquipmentSlot;
-import net.minecraft.item.Item;
-import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
-import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
-import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
-import net.minecraft.network.packet.c2s.play.UpdatePlayerAbilitiesC2SPacket;
-import net.minecraft.screen.slot.SlotActionType;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.text.Text;
+import net.minecraft.util.math.Box;
+import net.minecraft.util.math.MathHelper;
+import net.minecraft.util.math.Vec3d;
 import org.lwjgl.glfw.GLFW;
+
+import java.util.List;
+import java.util.Random;
 
 public class SpeedMod implements ModInitializer {
     private static final MinecraftClient mc = MinecraftClient.getInstance();
-    private static boolean enabled = false;
+    private static boolean killaura = false;
     private static boolean lastR = false;
-    private static int mode = 0; // 0 = PolarFlyX, 1 = AirStuck
-    private static boolean menuOpen = false;
+    private static Entity target = null;
+    private static long lastAttackTime = 0;
+    private static final Random random = new Random();
+    private static final TSAngle rotator = new TSAngle();
 
-    // Переменные для PolarFlyX
-    private static boolean goingUp = true;
-    private static final double HORIZONTAL_SPEED = 6.8;
-    private static final double MANUAL_VERTICAL = 8.25;
-    private static final double CYCLE_VERTICAL = 0.10;
-
-    // Переменные для AirStuck
-    private static boolean airStuckActive = false;
-    private static boolean wasElytra = false;
-    private static double airStuckSpeed = 2.0; // скорость движения вперёд
+    // ========== НАСТРОЙКИ ==========
+    private static final float RANGE = 4.2f;
+    private static final long MIN_DELAY = 750L;
+    private static final long MAX_DELAY = 850L;
 
     @Override
     public void onInitialize() {
@@ -42,162 +34,144 @@ public class SpeedMod implements ModInitializer {
             while (true) {
                 try { Thread.sleep(50); } catch (InterruptedException e) { break; }
                 if (mc.player == null) continue;
-
                 long window = mc.getWindow().getHandle();
-                boolean rShift = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_SHIFT) == GLFW.GLFW_PRESS;
-                if (rShift && !menuOpen) {
-                    menuOpen = true;
-                    mc.execute(() -> mc.setScreen(new ModeMenu()));
-                    try { Thread.sleep(200); } catch (InterruptedException ignored) {}
-                }
-
                 boolean currentR = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS;
                 if (currentR && !lastR) {
-                    enabled = !enabled;
-                    mc.player.sendMessage(Text.literal(enabled ? "§a" + getModeName() + " ON" : "§c" + getModeName() + " OFF"), true);
-                    if (enabled) {
-                        if (mode == 1) activateAirStuck();
-                    } else {
-                        if (mode == 1) deactivateAirStuck();
-                    }
+                    killaura = !killaura;
+                    mc.player.sendMessage(Text.literal(killaura ? "§aKillaura (TSAngle) ON" : "§cKillaura OFF"), true);
+                    if (!killaura) target = null;
                     try { Thread.sleep(200); } catch (InterruptedException ignored) {}
                 }
                 lastR = currentR;
-
-                if (enabled) {
-                    if (mode == 0) tickPolarFly();
-                    else tickAirStuck();
-                }
+                if (killaura) tick();
             }
         }).start();
     }
 
-    private static String getModeName() {
-        return mode == 0 ? "PolarFlyX" : "AirStuck";
+    private void tick() {
+        updateTarget();
+        if (target == null) return;
+
+        // Проверка дистанции и видимости
+        if (mc.player.squaredDistanceTo(target) > RANGE * RANGE) return;
+        if (!mc.player.canSee(target)) return;
+
+        // Вычисляем идеальные углы на цель
+        Vec3d eye = mc.player.getEyePos();
+        Vec3d to = target.getBoundingBox().getCenter().subtract(eye);
+        double hyp = Math.hypot(to.x, to.z);
+        float idealYaw = (float) (Math.toDegrees(Math.atan2(to.z, to.x)) - 90);
+        float idealPitch = (float) -Math.toDegrees(Math.atan2(to.y, hyp));
+        idealYaw = wrap(idealYaw);
+        idealPitch = clamp(idealPitch, -89, 89);
+
+        // Текущие углы игрока
+        Turns current = new Turns(mc.player.getYaw(), mc.player.getPitch());
+        Turns targetAngles = new Turns(idealYaw, idealPitch);
+
+        // Применяем ротацию TSAngle
+        Turns newAngles = rotator.limitAngleChange(current, targetAngles, to, target);
+        mc.player.setYaw(newAngles.getYaw());
+        mc.player.setPitch(newAngles.getPitch());
+        mc.player.headYaw = newAngles.getYaw();
+        mc.player.bodyYaw = newAngles.getYaw();
+
+        // Атака с задержкой
+        long now = System.currentTimeMillis();
+        long delay = MIN_DELAY + (long)(random.nextDouble() * (MAX_DELAY - MIN_DELAY));
+        // Проверка, достаточно ли близко к цели (угол)
+        float deltaYaw = wrap(idealYaw - mc.player.getYaw());
+        float deltaPitch = idealPitch - mc.player.getPitch();
+        boolean canAttack = Math.abs(deltaYaw) < 15f && Math.abs(deltaPitch) < 15f;
+        if (now - lastAttackTime >= delay && canAttack) {
+            boolean wasSprinting = mc.player.isSprinting();
+            mc.interactionManager.attackEntity(mc.player, target);
+            mc.player.swingHand(net.minecraft.util.Hand.MAIN_HAND);
+            if (wasSprinting) mc.player.setSprinting(true);
+            mc.player.setSprinting(true);
+            lastAttackTime = now;
+        }
     }
 
-    // ==================== PolarFlyX ====================
-    private static void tickPolarFly() {
-        if (mc.player == null) return;
-
-        // При активации отправляем пакет элитры и сбрасываем падение
-        if (mc.player.age % 20 == 0) { // один раз при включении
-            mc.getNetworkHandler().sendPacket(new ClientCommandC2SPacket(mc.player, ClientCommandC2SPacket.Mode.START_FALL_FLYING));
-            mc.player.setVelocity(mc.player.getVelocity().x, 0.03, mc.player.getVelocity().z);
-            mc.player.fallDistance = 0;
+    private void updateTarget() {
+        if (target != null && target.isAlive() && mc.player.squaredDistanceTo(target) <= RANGE * RANGE) {
+            return;
         }
-
-        double yaw = Math.toRadians(mc.player.getYaw());
-        double motionX = 0.0, motionZ = 0.0, motionY;
-
-        // Горизонтальное движение
-        if (mc.options.forwardKey.isPressed()) {
-            motionX -= Math.sin(yaw) * HORIZONTAL_SPEED;
-            motionZ += Math.cos(yaw) * HORIZONTAL_SPEED;
-        }
-        if (mc.options.backKey.isPressed()) {
-            motionX += Math.sin(yaw) * HORIZONTAL_SPEED;
-            motionZ -= Math.cos(yaw) * HORIZONTAL_SPEED;
-        }
-        if (mc.options.leftKey.isPressed()) {
-            motionX -= Math.cos(yaw) * HORIZONTAL_SPEED;
-            motionZ -= Math.sin(yaw) * HORIZONTAL_SPEED;
-        }
-        if (mc.options.rightKey.isPressed()) {
-            motionX += Math.cos(yaw) * HORIZONTAL_SPEED;
-            motionZ += Math.sin(yaw) * HORIZONTAL_SPEED;
-        }
-
-        // Вертикальное движение
-        if (mc.options.jumpKey.isPressed()) {
-            motionY = MANUAL_VERTICAL;
-        } else if (mc.options.sneakKey.isPressed()) {
-            motionY = -1.4;
-        } else {
-            motionY = goingUp ? CYCLE_VERTICAL : -CYCLE_VERTICAL;
-            if (mc.player.age % 2 == 0) goingUp = !goingUp;
-        }
-
-        mc.player.fallDistance = 0;
-        mc.player.setVelocity(motionX, motionY, motionZ);
-    }
-
-    // ==================== AirStuck ====================
-    private static void activateAirStuck() {
-        if (mc.player == null) return;
-        wasElytra = mc.player.getEquippedStack(EquipmentSlot.CHEST).getItem() == Items.ELYTRA;
-        // автосмена элитры на броню (если включено – но для простоты не реализовано)
-    }
-
-    private static void deactivateAirStuck() {
-        if (mc.player == null) return;
-        // при выключении возвращаем элитру, если её меняли (пропустим)
-    }
-
-    private static void tickAirStuck() {
-        if (mc.player == null) return;
-
-        // Блокировка пакетов движения (эмуляция через отмену – но в отдельном потоке нельзя, поэтому просто не отправляем)
-        // В оригинале AirStuck отменяет пакеты движения. В нашем случае мы не отправляем ничего, кроме движения вперёд.
-        if (mc.player.isGliding()) return; // не мешаем полёту на элитре
-
-        if (mc.options.forwardKey.isPressed()) {
-            float yaw = mc.player.getYaw();
-            double motionX = -Math.sin(Math.toRadians(yaw)) * airStuckSpeed * 0.1;
-            double motionZ = Math.cos(Math.toRadians(yaw)) * airStuckSpeed * 0.1;
-            mc.player.setVelocity(motionX, 0, motionZ);
-        } else {
-            mc.player.setVelocity(0, 0, 0);
-        }
-        // Эмулируем отмену пакетов движения – не отправляем клиентские пакеты (уже не отправляем, кроме установки скорости)
-    }
-
-    // ==================== GUI выбора режима ====================
-    static class ModeMenu extends Screen {
-        protected ModeMenu() {
-            super(Text.literal("Select Mode"));
-        }
-
-        @Override
-        protected void init() {
-            super.init();
-            int cx = width / 2;
-            int y = height / 2 - 30;
-
-            addDrawableChild(ButtonWidget.builder(Text.literal("PolarFlyX" + (mode == 0 ? " ✓" : "")), btn -> {
-                mode = 0;
-                menuOpen = false;
-                close();
-            }).dimensions(cx - 75, y, 150, 20).build());
-
-            addDrawableChild(ButtonWidget.builder(Text.literal("AirStuck" + (mode == 1 ? " ✓" : "")), btn -> {
-                mode = 1;
-                menuOpen = false;
-                close();
-            }).dimensions(cx - 75, y + 30, 150, 20).build());
-
-            addDrawableChild(ButtonWidget.builder(Text.literal("Close"), btn -> {
-                menuOpen = false;
-                close();
-            }).dimensions(cx - 75, y + 60, 150, 20).build());
-        }
-
-        @Override
-        public void render(DrawContext ctx, int mx, int my, float delta) {
-            ctx.fill(0, 0, width, height, 0xCC000000);
-            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("Select Flight Mode"), width / 2, height / 2 - 60, 0xFFFFFF);
-            super.render(ctx, mx, my, delta);
-        }
-
-        @Override
-        public boolean keyPressed(int keyCode, int scan, int mods) {
-            if (keyCode == GLFW.GLFW_KEY_ESCAPE || keyCode == GLFW.GLFW_KEY_RIGHT_SHIFT) {
-                menuOpen = false;
-                close();
-                return true;
+        Entity best = null;
+        double closest = RANGE * RANGE;
+        Box box = mc.player.getBoundingBox().expand(RANGE);
+        List<Entity> entities = mc.world.getOtherEntities(mc.player, box,
+                e -> e instanceof LivingEntity && e != mc.player && ((LivingEntity) e).isAlive());
+        for (Entity e : entities) {
+            if (e instanceof PlayerEntity && mc.player.isTeammate((PlayerEntity) e)) continue;
+            double dist = mc.player.squaredDistanceTo(e);
+            if (dist < closest && mc.player.canSee(e)) {
+                closest = dist;
+                best = e;
             }
-            return super.keyPressed(keyCode, scan, mods);
         }
-        @Override public boolean shouldPause() { return false; }
+        target = best;
+    }
+
+    private static float wrap(float v) { v %= 360f; if (v >= 180f) v -= 360f; if (v < -180f) v += 360f; return v; }
+    private static float clamp(float v, float min, float max) { return Math.max(min, Math.min(max, v)); }
+
+    // ========== ВСПОМОГАТЕЛЬНЫЕ КЛАССЫ ДЛЯ РОТАЦИИ ==========
+    static class Turns {
+        private float yaw, pitch;
+        public Turns(float yaw, float pitch) { this.yaw = yaw; this.pitch = pitch; }
+        public float getYaw() { return yaw; }
+        public float getPitch() { return pitch; }
+        public void setYaw(float y) { yaw = y; }
+        public void setPitch(float p) { pitch = p; }
+        // Адаптация чувствительности (упрощённо – возвращаем себя)
+        public Turns adjustSensitivity() { return this; }
+    }
+
+    static class MathAngle {
+        public static Turns calculateDelta(Turns a, Turns b) {
+            float dy = wrap(b.getYaw() - a.getYaw());
+            float dp = b.getPitch() - a.getPitch();
+            return new Turns(dy, dp);
+        }
+    }
+
+    static class Calculate {
+        private static final Random RAND = new Random();
+        public static float getRandom(float min, float max) {
+            return min + RAND.nextFloat() * (max - min);
+        }
+    }
+
+    static class TSAngle {
+        private static final float EPSILON = 1.0E-3F;
+
+        public Turns limitAngleChange(Turns currentAngle, Turns targetAngle, Vec3d vec3d, Entity entity) {
+            Turns delta = MathAngle.calculateDelta(currentAngle, targetAngle);
+            float yawDelta = delta.getYaw();
+            float pitchDelta = delta.getPitch();
+            float length = (float) Math.hypot(yawDelta, pitchDelta);
+
+            float yawSpeed = 25.0f + Calculate.getRandom(0.0f, 5.0f);
+            float pitchSpeed = yawSpeed * (0.5f + (float) Math.random() * 0.5f);
+
+            Turns moveAngle = new Turns(currentAngle.getYaw(), currentAngle.getPitch());
+
+            if (length > EPSILON) {
+                float yawStep = Math.min(Math.abs(yawDelta), yawSpeed);
+                float pitchStep = Math.min(Math.abs(pitchDelta), pitchSpeed);
+
+                float newYaw = currentAngle.getYaw() + Math.signum(yawDelta) * yawStep;
+                float newPitch = MathHelper.clamp(currentAngle.getPitch() + Math.signum(pitchDelta) * pitchStep, -89.0F, 90.0F);
+
+                moveAngle.setYaw(newYaw);
+                moveAngle.setPitch(newPitch);
+            }
+            return moveAngle.adjustSensitivity();
+        }
+
+        public Vec3d randomValue() {
+            return new Vec3d(0.1, 0.1, 0.1);
+        }
     }
 }
