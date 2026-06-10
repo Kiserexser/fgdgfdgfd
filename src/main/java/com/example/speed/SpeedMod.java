@@ -21,12 +21,13 @@ public class SpeedMod implements ModInitializer {
     private static Entity target = null;
     private static long lastAttackTime = 0;
     private static final Random random = new Random();
-    private static final TSAngle rotator = new TSAngle();
 
-    // ========== НАСТРОЙКИ ==========
+    // Настройки
     private static final float RANGE = 4.2f;
     private static final long MIN_DELAY = 750L;
     private static final long MAX_DELAY = 850L;
+    private static final float ROTATION_SPEED = 0.4f;   // 0.4 = 40% от разницы за тик (плавно, без рывков)
+    private static final float MAX_ANGLE_DELTA = 15f;   // атакуем если цель в пределах 15° от центра
 
     @Override
     public void onInitialize() {
@@ -38,7 +39,7 @@ public class SpeedMod implements ModInitializer {
                 boolean currentR = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS;
                 if (currentR && !lastR) {
                     killaura = !killaura;
-                    mc.player.sendMessage(Text.literal(killaura ? "§aKillaura (TSAngle) ON" : "§cKillaura OFF"), true);
+                    mc.player.sendMessage(Text.literal(killaura ? "§aKillaura ON" : "§cKillaura OFF"), true);
                     if (!killaura) target = null;
                     try { Thread.sleep(200); } catch (InterruptedException ignored) {}
                 }
@@ -52,37 +53,36 @@ public class SpeedMod implements ModInitializer {
         updateTarget();
         if (target == null) return;
 
-        // Проверка дистанции и видимости
         if (mc.player.squaredDistanceTo(target) > RANGE * RANGE) return;
         if (!mc.player.canSee(target)) return;
 
-        // Вычисляем идеальные углы на цель
+        // Идеальные углы на цель
         Vec3d eye = mc.player.getEyePos();
         Vec3d to = target.getBoundingBox().getCenter().subtract(eye);
         double hyp = Math.hypot(to.x, to.z);
-        float idealYaw = (float) (Math.toDegrees(Math.atan2(to.z, to.x)) - 90);
-        float idealPitch = (float) -Math.toDegrees(Math.atan2(to.y, hyp));
-        idealYaw = wrap(idealYaw);
-        idealPitch = clamp(idealPitch, -89, 89);
+        float idealYaw = wrap((float) (Math.toDegrees(Math.atan2(to.z, to.x)) - 90));
+        float idealPitch = clamp((float) -Math.toDegrees(Math.atan2(to.y, hyp)), -89, 89);
 
-        // Текущие углы игрока
-        Turns current = new Turns(mc.player.getYaw(), mc.player.getPitch());
-        Turns targetAngles = new Turns(idealYaw, idealPitch);
+        // Плавное изменение текущих углов к идеальным (интерполяция)
+        float currentYaw = mc.player.getYaw();
+        float currentPitch = mc.player.getPitch();
+        float newYaw = lerpAngle(currentYaw, idealYaw, ROTATION_SPEED);
+        float newPitch = lerp(currentPitch, idealPitch, ROTATION_SPEED);
+        newPitch = clamp(newPitch, -89, 89);
 
-        // Применяем ротацию TSAngle
-        Turns newAngles = rotator.limitAngleChange(current, targetAngles, to, target);
-        mc.player.setYaw(newAngles.getYaw());
-        mc.player.setPitch(newAngles.getPitch());
-        mc.player.headYaw = newAngles.getYaw();
-        mc.player.bodyYaw = newAngles.getYaw();
+        // Применяем поворот
+        mc.player.setYaw(newYaw);
+        mc.player.setPitch(newPitch);
+        mc.player.headYaw = newYaw;
+        mc.player.bodyYaw = newYaw;
 
-        // Атака с задержкой
+        // Проверка, атакуем ли
+        float deltaYaw = wrap(idealYaw - newYaw);
+        float deltaPitch = idealPitch - newPitch;
+        boolean canAttack = Math.abs(deltaYaw) < MAX_ANGLE_DELTA && Math.abs(deltaPitch) < MAX_ANGLE_DELTA;
+
         long now = System.currentTimeMillis();
         long delay = MIN_DELAY + (long)(random.nextDouble() * (MAX_DELAY - MIN_DELAY));
-        // Проверка, достаточно ли близко к цели (угол)
-        float deltaYaw = wrap(idealYaw - mc.player.getYaw());
-        float deltaPitch = idealPitch - mc.player.getPitch();
-        boolean canAttack = Math.abs(deltaYaw) < 15f && Math.abs(deltaPitch) < 15f;
         if (now - lastAttackTime >= delay && canAttack) {
             boolean wasSprinting = mc.player.isSprinting();
             mc.interactionManager.attackEntity(mc.player, target);
@@ -113,65 +113,23 @@ public class SpeedMod implements ModInitializer {
         target = best;
     }
 
-    private static float wrap(float v) { v %= 360f; if (v >= 180f) v -= 360f; if (v < -180f) v += 360f; return v; }
-    private static float clamp(float v, float min, float max) { return Math.max(min, Math.min(max, v)); }
-
-    // ========== ВСПОМОГАТЕЛЬНЫЕ КЛАССЫ ДЛЯ РОТАЦИИ ==========
-    static class Turns {
-        private float yaw, pitch;
-        public Turns(float yaw, float pitch) { this.yaw = yaw; this.pitch = pitch; }
-        public float getYaw() { return yaw; }
-        public float getPitch() { return pitch; }
-        public void setYaw(float y) { yaw = y; }
-        public void setPitch(float p) { pitch = p; }
-        // Адаптация чувствительности (упрощённо – возвращаем себя)
-        public Turns adjustSensitivity() { return this; }
+    // Линейная интерполяция углов (учитывает переход через 360)
+    private static float lerpAngle(float from, float to, float factor) {
+        float diff = wrap(to - from);
+        return from + diff * factor;
     }
 
-    static class MathAngle {
-        public static Turns calculateDelta(Turns a, Turns b) {
-            float dy = wrap(b.getYaw() - a.getYaw());
-            float dp = b.getPitch() - a.getPitch();
-            return new Turns(dy, dp);
-        }
+    private static float lerp(float from, float to, float factor) {
+        return from + (to - from) * factor;
     }
 
-    static class Calculate {
-        private static final Random RAND = new Random();
-        public static float getRandom(float min, float max) {
-            return min + RAND.nextFloat() * (max - min);
-        }
+    private static float wrap(float v) {
+        v %= 360f;
+        if (v >= 180f) v -= 360f;
+        if (v < -180f) v += 360f;
+        return v;
     }
-
-    static class TSAngle {
-        private static final float EPSILON = 1.0E-3F;
-
-        public Turns limitAngleChange(Turns currentAngle, Turns targetAngle, Vec3d vec3d, Entity entity) {
-            Turns delta = MathAngle.calculateDelta(currentAngle, targetAngle);
-            float yawDelta = delta.getYaw();
-            float pitchDelta = delta.getPitch();
-            float length = (float) Math.hypot(yawDelta, pitchDelta);
-
-            float yawSpeed = 25.0f + Calculate.getRandom(0.0f, 5.0f);
-            float pitchSpeed = yawSpeed * (0.5f + (float) Math.random() * 0.5f);
-
-            Turns moveAngle = new Turns(currentAngle.getYaw(), currentAngle.getPitch());
-
-            if (length > EPSILON) {
-                float yawStep = Math.min(Math.abs(yawDelta), yawSpeed);
-                float pitchStep = Math.min(Math.abs(pitchDelta), pitchSpeed);
-
-                float newYaw = currentAngle.getYaw() + Math.signum(yawDelta) * yawStep;
-                float newPitch = MathHelper.clamp(currentAngle.getPitch() + Math.signum(pitchDelta) * pitchStep, -89.0F, 90.0F);
-
-                moveAngle.setYaw(newYaw);
-                moveAngle.setPitch(newPitch);
-            }
-            return moveAngle.adjustSensitivity();
-        }
-
-        public Vec3d randomValue() {
-            return new Vec3d(0.1, 0.1, 0.1);
-        }
+    private static float clamp(float v, float min, float max) {
+        return Math.max(min, Math.min(max, v));
     }
 }
