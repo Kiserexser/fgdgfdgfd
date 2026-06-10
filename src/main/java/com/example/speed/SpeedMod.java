@@ -2,149 +2,111 @@ package com.example.speed;
 
 import net.fabricmc.api.ModInitializer;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.widget.ButtonWidget;
-import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
+import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
+import net.minecraft.network.packet.s2c.play.PlayerPositionLookS2CPacket;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.Vec3d;
 import org.lwjgl.glfw.GLFW;
-
-import java.util.Random;
 
 public class SpeedMod implements ModInitializer {
     private static final MinecraftClient mc = MinecraftClient.getInstance();
     private static boolean enabled = false;
     private static boolean lastR = false;
-    private static boolean menuOpen = false;
-    private static int mode = 0; // 0-6
-    private static final String[] MODES = {"Vanilla", "Grim", "Matrix", "Polar", "AAC", "HighPing", "VelocitySpam"};
-    private static Vec3d frozenPos = Vec3d.ZERO;
-    private static int tickCounter = 0;
-    private static final Random random = new Random();
+    private static int ticks = 0;
+    private static int groundTicks = 0;
+    private static float originalTickLength = 50.0f;
 
     @Override
     public void onInitialize() {
+        if (mc.timer != null) originalTickLength = mc.timer.tickLength;
+        System.out.println("[SpeedModule] Loaded. Press R to toggle.");
+
         new Thread(() -> {
             while (true) {
                 try { Thread.sleep(50); } catch (InterruptedException e) { break; }
                 if (mc.player == null) continue;
                 long window = mc.getWindow().getHandle();
-                boolean rShift = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_SHIFT) == GLFW.GLFW_PRESS;
-                if (rShift && !menuOpen) {
-                    menuOpen = true;
-                    mc.execute(() -> mc.setScreen(new ModeMenu()));
-                    try { Thread.sleep(200); } catch (InterruptedException ignored) {}
-                }
                 boolean currentR = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS;
                 if (currentR && !lastR) {
                     enabled = !enabled;
-                    if (enabled) {
-                        frozenPos = mc.player.getPos();
-                        mc.player.sendMessage(Text.literal("§aFreeze [" + MODES[mode] + "] ON"), true);
-                    } else {
-                        mc.player.sendMessage(Text.literal("§cFreeze OFF"), true);
+                    mc.player.sendMessage(Text.literal(enabled ? "§aSpeedModule ON" : "§cSpeedModule OFF"), true);
+                    if (!enabled) {
+                        if (mc.timer != null) mc.timer.tickLength = originalTickLength;
+                        ticks = 0;
+                        groundTicks = 0;
                     }
                     try { Thread.sleep(200); } catch (InterruptedException ignored) {}
                 }
                 lastR = currentR;
-                if (enabled) tick();
+                if (enabled) {
+                    onMovePost();
+                    onMoveInput();
+                    onPostMotion();
+                }
             }
         }).start();
     }
 
-    private static void tick() {
-        if (mc.player == null) return;
-        tickCounter++;
+    private void setTimer(float factor) {
+        if (mc.timer != null) mc.timer.tickLength = originalTickLength / factor;
+    }
 
-        switch (mode) {
-            case 0: // Vanilla
-                mc.player.setPosition(frozenPos);
-                mc.player.setVelocity(Vec3d.ZERO);
-                mc.player.input.movementForward = 0;
-                mc.player.input.movementSideways = 0;
-                break;
-            case 1: // Grim (пакеты onGround)
-                if (tickCounter % 2 == 0) {
-                    PlayerMoveC2SPacket.PositionAndOnGround packet = new PlayerMoveC2SPacket.PositionAndOnGround(
-                            frozenPos.x, frozenPos.y, frozenPos.z, true, false);
-                    mc.getNetworkHandler().sendPacket(packet);
-                }
-                mc.player.setVelocity(Vec3d.ZERO);
-                break;
-            case 2: // Matrix (телепортация + обнуление пакетов)
-                mc.player.setPosition(frozenPos);
-                mc.player.setVelocity(Vec3d.ZERO);
-                if (tickCounter % 3 == 0) {
-                    PlayerMoveC2SPacket.PositionAndOnGround packet = new PlayerMoveC2SPacket.PositionAndOnGround(
-                            frozenPos.x, frozenPos.y, frozenPos.z, false, false);
-                    mc.getNetworkHandler().sendPacket(packet);
-                }
-                break;
-            case 3: // Polar (только позиция, скорость не обнуляем)
-                mc.player.setPosition(frozenPos);
-                break;
-            case 4: // AAC (с задержкой)
-                if (tickCounter % 5 == 0) {
-                    mc.player.setPosition(frozenPos);
-                    mc.player.setVelocity(Vec3d.ZERO);
-                }
-                break;
-            case 5: // HighPing (симуляция высокого пинга)
-                if (tickCounter % 10 == 0) {
-                    // Отправляем пакет с задержкой (имитация лага)
-                    mc.player.setPosition(frozenPos);
-                    mc.player.setVelocity(Vec3d.ZERO);
-                    // Не отправляем пакеты движения несколько тиков
-                }
-                // Блокируем движение
-                mc.player.input.movementForward = 0;
-                mc.player.input.movementSideways = 0;
-                break;
-            case 6: // VelocitySpam (спам пакетами скорости)
-                if (tickCounter % 2 == 0) {
-                    mc.player.setVelocity(0, 0, 0);
-                }
-                mc.player.setPosition(frozenPos);
-                break;
+    // ========== EventOnMovePost ==========
+    private void onMovePost() {
+        setTimer(1.7F);
+
+        if (ticks > 3) {
+            double bst = 0.03;
+            if (ticks % 2 == 0) {
+                mc.player.addVelocity(0, 0.03F, 0);
+                bst = mc.player.isOnGround() ? 0.085 : 0.03;
+            }
+            float dir = getDirection();
+            if (dir != -1.0F) {
+                double yaw = Math.toRadians(dir);
+                double xt = -Math.sin(yaw);
+                double zt = Math.cos(yaw);
+                mc.player.addVelocity(xt * bst, 0, zt * bst);
+            }
         }
-        // Дополнительно отключаем прыжок и приседание (через options)
-        if (mode != 1 && mode != 2) { // не для Grim/Matrix
-            mc.options.jumpKey.setPressed(false);
-            mc.options.sneakKey.setPressed(false);
+        ticks++;
+    }
+
+    // ========== EventMoveInput (прыжки на земле) ==========
+    private void onMoveInput() {
+        if (mc.player.verticalCollision) groundTicks++;
+        else groundTicks = 0;
+
+        if (groundTicks >= 1) mc.player.jump();
+    }
+
+    // ========== EventPostMotion (элитра) ==========
+    private void onPostMotion() {
+        if (ticks % 2 == 0) {
+            setTimer(0.3F);
+            if (mc.getNetworkHandler() != null) {
+                mc.getNetworkHandler().sendPacket(new ClientCommandC2SPacket(mc.player, ClientCommandC2SPacket.Mode.START_FALL_FLYING));
+            }
         }
     }
 
-    static class ModeMenu extends Screen {
-        protected ModeMenu() { super(Text.literal("Freeze Mode")); }
-        @Override
-        protected void init() {
-            super.init();
-            int cx = width / 2;
-            int y = height / 2 - 80;
-            for (int i = 0; i < MODES.length; i++) {
-                final int idx = i;
-                addDrawableChild(ButtonWidget.builder(
-                        Text.literal(MODES[i] + (mode == idx ? " ✓" : "")),
-                        btn -> { mode = idx; menuOpen = false; close(); }
-                ).dimensions(cx - 100, y + i * 24, 200, 20).build());
+    // ========== Обработка пакета PlayerPositionLookS2CPacket (будет вызвана из миксина) ==========
+    public static void onPlayerPositionLook() {
+        if (enabled) {
+            if (ticks % 2 == 1) {
+                ticks++;
             }
-            addDrawableChild(ButtonWidget.builder(Text.literal("Close"), btn -> { menuOpen = false; close(); })
-                    .dimensions(cx - 50, y + MODES.length * 24 + 10, 100, 20).build());
+            if (mc.timer != null) mc.timer.tickLength = originalTickLength;
         }
-        @Override
-        public void render(DrawContext ctx, int mx, int my, float delta) {
-            ctx.fill(0, 0, width, height, 0xCC000000);
-            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("Select Freeze Mode"), width / 2, height / 2 - 100, 0xFFFFFF);
-            super.render(ctx, mx, my, delta);
-        }
-        @Override public boolean keyPressed(int keyCode, int scan, int mods) {
-            if (keyCode == GLFW.GLFW_KEY_ESCAPE || keyCode == GLFW.GLFW_KEY_RIGHT_SHIFT) {
-                menuOpen = false; close(); return true;
-            }
-            return super.keyPressed(keyCode, scan, mods);
-        }
-        @Override public void close() { client.setScreen(null); }
-        @Override public boolean shouldPause() { return false; }
+    }
+
+    private float getDirection() {
+        float yaw = mc.player.getYaw();
+        float forward = mc.player.input.movementForward;
+        float strafe = mc.player.input.movementSideways;
+        if (forward == 0 && strafe == 0) return -1.0f;
+        float angle = yaw + (strafe > 0 ? -90 : 90) * (strafe != 0 ? 1 : 0);
+        if (forward < 0) angle += 180;
+        return angle;
     }
 }
